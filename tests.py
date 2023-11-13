@@ -1,3 +1,5 @@
+import asyncio
+import binascii
 import unittest
 import main
 
@@ -9,10 +11,48 @@ full = main.ByteStream(b"\xaa\xaa\x80\x00\x00\x01\x00\x00\x00\x05\x00\n\x06yande
 header = main.ByteStream(full[0:12])
 question = main.ByteStream(full[12:27])
 
+class DnsRequest:
+    def __init__(self, domain):
+        self._header = self._make_header()
+        self._question = self._make_question(domain)
+
+    @staticmethod
+    def _make_question(domain: str):
+        labels = domain.split(".")
+        question = []
+        for label in labels:
+            label_length = len(label).to_bytes()
+            binary_label = label.encode('ascii')
+            question.append(label_length)
+            question.append(binary_label)
+        question.append(binascii.unhexlify("00"))
+        QTYPE = binascii.unhexlify("0001")  # A - запись
+        QCLASS = binascii.unhexlify("0001")  # IN - интернет
+        question.append(QTYPE)
+        question.append(QCLASS)
+        return b''.join(question)
+
+    @staticmethod
+    def _make_header():
+        id = binascii.unhexlify("AAAA")
+        fromQR_toRCODE = binascii.unhexlify("0000")
+        QDCOUNT = binascii.unhexlify("0001")
+        ANCOUNT = binascii.unhexlify("0000")
+        NSCOUNT = binascii.unhexlify("0000")
+        ARCOUNT = binascii.unhexlify("0000")
+        return b''.join([id, fromQR_toRCODE, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT])
+
+    def build(self):
+        return b''.join([self._header, self._question])
 
 class AsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test(self):
-        result = await main.get_answer("a.root-servers.net", )
+        loop = asyncio.get_event_loop()
+        loop.set_debug(True)
+        request = main.DnsMessage(DnsRequest("yandex.ru").build())
+        result = loop.run_until_complete(await main.get_answer("199.9.14.201", request))
+        loop.close()
+        print(result)
 
 class Tests(unittest.TestCase):
 
