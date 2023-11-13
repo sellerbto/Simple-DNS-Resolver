@@ -2,12 +2,12 @@ import socket
 import binascii
 import asyncio
 import asyncio_dgram
+
 from enums import *
 
-
-root_servers = ("198.41.0.4", "199.9.14.201", "c.root-servers.net", "d.root-servers.net",
-                "e.root-servers.net", "g.root-servers.net", "h.root-servers.net", "i.root-servers.net",
-                "j.root-servers.net", "k.root-servers.net", "l.root-servers.net", "m.root-servers.net",)
+root_servers = ("198.41.0.4", "199.9.14.201", "192.33.4.12", "199.7.91.13",
+                "192.203.230.10", "192.5.5.241", "192.112.36.4", "198.97.190.53",
+                "192.36.148.17", "192.58.128.30", "193.0.14.129", "199.7.83.42",)
 
 
 class ByteStream:
@@ -24,6 +24,7 @@ class ByteStream:
 
     def next_byte(self, slice=1):
         return self[self.index:self.index + slice]
+
 
 class AAAA:
     def __init__(self, response: ByteStream):
@@ -107,9 +108,10 @@ class Additional(Record):
     def __init__(self, response: ByteStream):
         super().__init__(response)
 
+
 class DnsRequest:
-    def __init__(self, domain):
-        self._header = self._make_header()
+    def __init__(self, message_id, domain):
+        self._header = self._make_header(message_id)
         self._question = self._make_question(domain)
 
     @staticmethod
@@ -129,17 +131,17 @@ class DnsRequest:
         return b''.join(question)
 
     @staticmethod
-    def _make_header():
-        id = binascii.unhexlify("AAAA")
+    def _make_header(message_id):
         fromQR_toRCODE = binascii.unhexlify("0000")
         QDCOUNT = binascii.unhexlify("0001")
         ANCOUNT = binascii.unhexlify("0000")
         NSCOUNT = binascii.unhexlify("0000")
         ARCOUNT = binascii.unhexlify("0000")
-        return b''.join([id, fromQR_toRCODE, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT])
+        return b''.join([message_id, fromQR_toRCODE, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT])
 
     def build(self):
         return b''.join([self._header, self._question])
+
 
 class Parse:
     @staticmethod
@@ -186,7 +188,8 @@ class DnsMessage:
         for i in range(self.header.ar_count):
             self.additionals.append(Additional(response))
 
-async def get_answer(dns_server, request: DnsMessage):
+
+async def ask_server(dns_server, request: DnsMessage):
     try:
         conn = await asyncio_dgram.connect((dns_server, 53))
         await conn.send(request.in_bytes_response)
@@ -198,31 +201,29 @@ async def get_answer(dns_server, request: DnsMessage):
         for i in response.authorities:
             if i.atype != DnsType.NS.value:
                 continue
-            conn.close()
-            authority_address = await get_authority_address(response, i, dns_server)
-            return await get_answer(authority_address, request)
+            authority_address = await get_authority_address(response, i, request.header.id)
+            return await ask_server(authority_address, request)
         return response
-    except Exception as e:
+    except TypeError as e:
         print(e)
+    except AttributeError as e:
+        print(e)
+    finally:
+        conn.close()
 
 
-
-
-async def get_authority_address(message: DnsMessage, authority: Authority, server: (str, int)):
+async def get_authority_address(message: DnsMessage, authority: Authority, user_message_id):
     for add in message.additionals:
         if add.host_name == authority.rdata.ip and add.atype == DnsType.A.value:
             return str(add.rdata)
-    return (await handle_client(DnsRequest(authority.rdata.ip).build())).answers[0].host_name
+    return (await get_answer(DnsRequest(user_message_id, authority.rdata.ip).build())).answers[0].host_name
 
 
-
-
-
-async def handle_client(client_request):
+async def get_answer(client_request):
     try:
         client_request = DnsMessage(client_request)
         for root in root_servers:
-            answer = await get_answer(root, client_request)
+            answer = await ask_server(root, client_request)
             if answer:
                 return answer
         return None
@@ -232,20 +233,20 @@ async def handle_client(client_request):
         print(e)
 
 
-async def handle_client1(data, remote_addr, server):
-   print("got")
-   answer = await handle_client(data)
-   await server.send(answer.in_bytes_response, remote_addr)
+async def handle_client(data, remote_addr, server):
+    answer = await get_answer(data)
+    await server.send(answer.in_bytes_response, remote_addr)
+
 
 async def main():
-   server = await asyncio_dgram.bind(("0.0.0.0", 1337))
-   while True:
-       data, remote_addr = await server.recv()
-       asyncio.create_task(handle_client1(data, remote_addr, server))
+    server = await asyncio_dgram.bind(("0.0.0.0", 1337))
+    while True:
+        data, remote_addr = await server.recv()
+        print(f"Incoming Connection {remote_addr}")
+        asyncio.create_task(handle_client(data, remote_addr, server))
+
 
 if __name__ == "__main__":
-   loop = asyncio.get_event_loop()
-   loop.set_debug(True)
-   loop.run_until_complete(main())
-   loop.run_forever()
-
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())
+    loop.run_forever()
