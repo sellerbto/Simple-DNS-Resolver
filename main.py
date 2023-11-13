@@ -1,6 +1,12 @@
 import socket
 import binascii
+import asyncio
 from enums import *
+
+
+root_servers = ("a.root-servers.net", "b.root-servers.net", "c.root-servers.net", "d.root-servers.net",
+                "e.root-servers.net", "g.root-servers.net", "h.root-servers.net", "i.root-servers.net",
+                "j.root-servers.net", "k.root-servers.net", "l.root-servers.net", "m.root-servers.net",)
 
 
 class ByteStream:
@@ -49,7 +55,7 @@ class Record:
 
 class Header:
     def __init__(self, response: ByteStream):
-        self.ID = response.next_byte(slice=2)
+        self.id = response.next_byte(slice=2)
         self._FromQR_toRCODE = response.next_byte(slice=2)
         self._QDCount = response.next_byte(slice=2)
         self._ANCount = response.next_byte(slice=2)
@@ -95,52 +101,6 @@ class Additional(Record):
         super().__init__(response)
 
 
-def send_dns_request(address, port, message):
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.sendto(message, (address, port))
-        data = sock.recv(8192)
-        # return binascii.hexlify(data).decode("utf-8")
-        return data
-    except:
-        sock.close()
-
-
-class DnsRequest:
-    def __init__(self, domain):
-        self._header = self._make_header()
-        self._question = self._make_question(domain)
-
-    @staticmethod
-    def _make_question(domain: str):
-        labels = domain.split(".")
-        question = []
-        for label in labels:
-            label_length = len(label).to_bytes()
-            binary_label = label.encode('ascii')
-            question.append(label_length)
-            question.append(binary_label)
-        question.append(binascii.unhexlify("00"))
-        QTYPE = binascii.unhexlify("0001")  # A - запись
-        QCLASS = binascii.unhexlify("0001")  # IN - интернет
-        question.append(QTYPE)
-        question.append(QCLASS)
-        return b''.join(question)
-
-    @staticmethod
-    def _make_header():
-        id = binascii.unhexlify("AAAA")
-        fromQR_toRCODE = binascii.unhexlify("0000")
-        QDCOUNT = binascii.unhexlify("0001")
-        ANCOUNT = binascii.unhexlify("0000")
-        NSCOUNT = binascii.unhexlify("0000")
-        ARCOUNT = binascii.unhexlify("0000")
-        return b''.join([id, fromQR_toRCODE, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT])
-
-    def build(self):
-        return b''.join([self._header, self._question])
-
-
 class Parse:
     @staticmethod
     def host_name(response: ByteStream):
@@ -168,8 +128,9 @@ class Parse:
         return str.join(".", host_name)
 
 
-class DnsResponse:
+class DnsMessage:
     def __init__(self, response: bytes):
+        self.in_bytes_response = response
         response = ByteStream(response)
         self.header = Header(response)
         self.questions = []
@@ -185,22 +146,48 @@ class DnsResponse:
         for i in range(self.header.ar_count):
             self.additionals.append(Additional(response))
 
+async def get_answer(dns_server, request):
+    reader, writer = asyncio.open_connection(dns_server, 53)
+    reader: asyncio.StreamReader
+    writer: asyncio.StreamWriter
+    writer.write(request)
+    await writer.drain()
+    await asyncio.sleep(0.2)
+    response = DnsMessage(await reader.read(4096))
+    if len(response.answers) != 0:
+        return response
+    for i in response.authorities:
+        print(i)
 
-message = DnsRequest("yandex.ru").build()
-response = send_dns_request("199.9.14.201", 53,
-                            message)
 
-a = DnsResponse(response)
-# message2 = binascii.unhexlify("AA AA 01 00 00 01 00 00 00 00 00 00 " \
-# "07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 00 01 00 01".replace(" ", "").replace("\n", ""))
-# print(send_dns_request("199.9.14.201", 53,
-#                        message))
-# удобно использовать hex потому что hex = 1 byte
+async def handle_client(client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
+    try:
+        client_request = await client_reader.read(4096)
+        for root in root_servers:
+            answer = await get_answer(root, client_request)
+            if answer:
+                break
+        client_writer.write(answer.in_bytes_response)
+        await client_writer.drain()
+    except AttributeError as e:
+        print(e)
+    except TypeError as e:
+        print(e)
+    finally:
+        client_writer.close()
 
-'''
-request-template in hex:
-AA AA # 16 bit ID
-0 # QR zero means query
-1 # 
-00 00 01 00 00 00 00 00 00 07 65 78 61 6d 70 6c 65 03 63 6f 6d 00 00 01 00 01
-'''
+
+
+
+
+
+
+async def main():
+    server = await asyncio.start_server(handle_client, "127.0.0.1", 53)
+    async with server:
+        await server.serve_forever()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+

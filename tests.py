@@ -10,8 +10,12 @@ header = main.ByteStream(full[0:12])
 question = main.ByteStream(full[12:27])
 
 
+class AsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test(self):
+        result = await main.get_answer("a.root-servers.net", )
 
 class Tests(unittest.TestCase):
+
     def create_bytestream(self, byte):
         return main.ByteStream(byte)
 

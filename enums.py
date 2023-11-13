@@ -9,7 +9,7 @@ class DnsClass(Enum):
 
     @classmethod
     def __missing__(cls, key):
-        raise AttributeError("Unknown Dns Type!")
+        raise AttributeError("Unknown Dns Class!")
 
 
 class DnsType(Enum):
