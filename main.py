@@ -1,8 +1,6 @@
-import socket
 import binascii
 import asyncio
 import asyncio_dgram
-
 from enums import *
 
 root_servers = ("198.41.0.4", "199.9.14.201", "192.33.4.12", "199.7.91.13",
@@ -43,12 +41,12 @@ class A:
 
 class NS:
     def __init__(self, response):
-        self.ip = Parse.host_name(response)
+        self.ip = DnsMessage.host_name(response)
 
 
 class Record:
     def __init__(self, response: ByteStream):
-        self.host_name = Parse.host_name(response)
+        self.host_name = DnsMessage.host_name(response)
         self.atype = int.from_bytes((response.next_byte(slice=2)))
         self.aclass = int.from_bytes((response.next_byte(slice=2)))
         self.ttl = int.from_bytes(response.next_byte(slice=4))
@@ -89,7 +87,7 @@ class Header:
 
 class Question:
     def __init__(self, response: ByteStream):
-        self.host_name = Parse.host_name(response)
+        self.host_name = DnsMessage.host_name(response)
         self.qtype = DnsType(int.from_bytes(response.next_byte(slice=2)))
         self.qclass = DnsClass(int.from_bytes(response.next_byte(slice=2)))
 
@@ -109,10 +107,60 @@ class Additional(Record):
         super().__init__(response)
 
 
-class DnsRequest:
-    def __init__(self, message_id, domain):
-        self._header = self._make_header(message_id)
-        self._question = self._make_question(domain)
+class DnsMessage:
+    def __init__(self, response: bytes):
+        self.in_bytes_response = response
+        response = ByteStream(response)
+        self.header = Header(response)
+        self.questions = []
+        for i in range(self.header.qd_count):
+            self.questions.append(Question(response))
+        self.answers = []
+        for i in range(self.header.answers_count):
+            self.answers.append(Answer(response))
+        self.authorities = []
+        for i in range(self.header.ns_count):
+            self.authorities.append(Authority(response))
+        self.additionals = []
+        for i in range(self.header.ar_count):
+            self.additionals.append(Additional(response))
+
+    @staticmethod
+    def host_name(response: ByteStream):
+        host_name = []
+        while True:
+            label = []
+            label_length = int.from_bytes(response.next_byte())
+            if label_length == 0:
+                break
+            if label_length >= 192:
+                response.index -= 1
+                offset_index = int.from_bytes(response.next_byte(slice=2)) & 16383
+                old_index = response.index
+                response.index = offset_index
+                offset_host_name = DnsMessage.host_name(response)
+                response.index = old_index
+                known_part = str.join('.', host_name)
+                if known_part == "":
+                    return offset_host_name
+                else:
+                    return f"{known_part}.{offset_host_name}"
+            for i in range(label_length):
+                label.append(chr(int.from_bytes(response.next_byte())))
+            host_name.append("".join(label))
+        return str.join(".", host_name)
+
+    @staticmethod
+    def create_ask_domain_message(message_id, domain):
+        header = DnsMessage._make_header(message_id)
+        question = DnsMessage._make_question(domain)
+
+    @staticmethod
+    def create_answer_message(message_id, client_question, answer):
+        header = DnsMessage._make_header(message_id, include_answer=True)
+
+
+    @staticmethod
 
     @staticmethod
     def _make_question(domain: str):
@@ -131,62 +179,15 @@ class DnsRequest:
         return b''.join(question)
 
     @staticmethod
-    def _make_header(message_id):
+    def _make_header(message_id, include_answer = False):
         fromQR_toRCODE = binascii.unhexlify("0000")
         QDCOUNT = binascii.unhexlify("0001")
-        ANCOUNT = binascii.unhexlify("0000")
+        ANCOUNT = binascii.unhexlify("0001") if include_answer else binascii.unhexlify("0000")
         NSCOUNT = binascii.unhexlify("0000")
         ARCOUNT = binascii.unhexlify("0000")
         return b''.join([message_id, fromQR_toRCODE, QDCOUNT, ANCOUNT, NSCOUNT, ARCOUNT])
 
-    def build(self):
-        return b''.join([self._header, self._question])
 
-
-class Parse:
-    @staticmethod
-    def host_name(response: ByteStream):
-        host_name = []
-        while True:
-            label = []
-            label_length = int.from_bytes(response.next_byte())
-            if label_length == 0:
-                break
-            if label_length >= 192:
-                response.index -= 1
-                offset_index = int.from_bytes(response.next_byte(slice=2)) & 16383
-                old_index = response.index
-                response.index = offset_index
-                offset_host_name = Parse.host_name(response)
-                response.index = old_index
-                known_part = str.join('.', host_name)
-                if known_part == "":
-                    return offset_host_name
-                else:
-                    return f"{known_part}.{offset_host_name}"
-            for i in range(label_length):
-                label.append(chr(int.from_bytes(response.next_byte())))
-            host_name.append("".join(label))
-        return str.join(".", host_name)
-
-
-class DnsMessage:
-    def __init__(self, response: bytes):
-        self.in_bytes_response = response
-        response = ByteStream(response)
-        self.header = Header(response)
-        self.questions = []
-        for i in range(self.header.qd_count):
-            self.questions.append(Question(response))
-        self.answers = []
-        for i in range(self.header.answers_count):
-            self.answers.append(Answer(response))
-        self.authorities = []
-        for i in range(self.header.ns_count):
-            self.authorities.append(Authority(response))
-        self.additionals = []
-        for i in range(self.header.ar_count):
-            self.additionals.append(Additional(response))
 
 
 async def ask_server(dns_server, request: DnsMessage):
