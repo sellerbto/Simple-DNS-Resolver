@@ -217,21 +217,16 @@ async def get_authority_address(message: DnsMessage, authority: Authority, user_
     for add in message.additionals:
         if add.host_name == authority.rdata.ip and add.atype == DnsType.A.value:
             return str(add.rdata)
-    return (await get_answer(DnsRequest(user_message_id, authority.rdata.ip).build())).answers[0].host_name
+    return (await get_answer(DnsMessage.create_ask_domain_message(user_message_id, authority.rdata.ip).build())).answers[0].host_name
 
 
 async def get_answer(client_request):
-    try:
         client_request = DnsMessage(client_request)
         for root in root_servers:
             answer = await ask_server(root, client_request)
             if answer:
                 return answer
         return None
-    except AttributeError as e:
-        print(e)
-    except TypeError as e:
-        print(e)
 
 
 async def handle_client(data, remote_addr, server):
